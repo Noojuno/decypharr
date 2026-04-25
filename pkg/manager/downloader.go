@@ -99,6 +99,11 @@ func (d *Downloader) download(torrent *storage.Entry) error {
 func (d *Downloader) process(entry *storage.Entry, mountPath string) error {
 	switch entry.Action {
 	case config.DownloadActionDownload:
+		// "Download in background" only applies to torrents — NZB content isn't on a
+		// mount, so there's nothing to symlink first.
+		if config.Get().DownloadInBackground && entry.IsTorrent() {
+			return d.processSymlinkThenDownload(entry, mountPath)
+		}
 		return d.processDownload(entry)
 	case config.DownloadActionSymlink:
 		return d.processSymlink(entry, mountPath)
@@ -230,6 +235,99 @@ func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) erro
 
 	d.markAsCompleted(entry)
 
+	return nil
+}
+
+// freeSpaceHeadroomRatio is the fraction of total entry size kept free as a
+// safety margin on top of the raw byte requirement for a backfill.
+const freeSpaceHeadroomRatio = 0.05
+
+// processSymlinkThenDownload makes the entry available immediately via symlinks
+// (so the *arr import completes right away), then downloads the real files in
+// the background and atomically swaps each symlink for its local copy as it
+// finishes.
+func (d *Downloader) processSymlinkThenDownload(entry *storage.Entry, mountPath string) error {
+	if err := d.processSymlink(entry, mountPath); err != nil {
+		return err
+	}
+	go d.backfillToLocal(entry)
+	return nil
+}
+
+// backfillToLocal downloads each file in the background and replaces its
+// symlink with the real file once complete. The entry's "completed" state is
+// not touched — symlinks already satisfy consumers; this is a transparent
+// upgrade.
+func (d *Downloader) backfillToLocal(entry *storage.Entry) {
+	files := entry.GetActiveFiles()
+	if len(files) == 0 {
+		return
+	}
+
+	var totalSize int64
+	for _, f := range files {
+		totalSize += f.Size
+	}
+
+	folder := entry.DownloadPath()
+	required := uint64(totalSize) + uint64(float64(totalSize)*freeSpaceHeadroomRatio)
+	avail, err := availableBytes(folder)
+	if err != nil {
+		d.logger.Warn().Err(err).Str("path", folder).Msg("Could not check free disk space; skipping background download")
+		return
+	}
+	if avail < required {
+		msg := fmt.Sprintf("Skipping background download for %s: need %d bytes, only %d available", entry.Name, required, avail)
+		d.logger.Warn().Msg(msg)
+		d.manager.Notifications.Notify(notifications.Event{
+			Type:    config.EventDownloadFailed,
+			Status:  "warning",
+			Entry:   entry,
+			Message: msg,
+		})
+		return
+	}
+
+	d.logger.Info().Str("entry", entry.Name).Int("files", len(files)).Msg("Starting background download to local storage")
+
+	p := pool.New().WithErrors().WithFirstError()
+	if d.maxDownloads > 0 {
+		p = p.WithMaxGoroutines(d.maxDownloads)
+	}
+	for _, file := range files {
+		p.Go(func() error {
+			return d.backfillFile(entry, file, folder)
+		})
+	}
+	if err := p.Wait(); err != nil {
+		d.logger.Error().Err(err).Str("entry", entry.Name).Msg("Background download finished with errors")
+		return
+	}
+	d.logger.Info().Str("entry", entry.Name).Msg("Background download complete; symlinks replaced with local files")
+}
+
+// backfillFile downloads a single file to a temporary path, then atomically
+// renames it over the existing symlink. POSIX rename(2) replaces the symlink
+// in a single step.
+func (d *Downloader) backfillFile(entry *storage.Entry, file *storage.File, folder string) error {
+	finalPath := filepath.Join(folder, file.Name)
+	tmpPath := finalPath + ".part"
+
+	link, err := d.manager.linkService.GetLink(context.Background(), entry, file.Name)
+	if err != nil {
+		return fmt.Errorf("get download link for %s: %w", file.Name, err)
+	}
+
+	if err := d.localDownloader(link.DownloadLink, tmpPath, file.ByteRange, nil); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("download %s: %w", file.Name, err)
+	}
+
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace symlink for %s: %w", file.Name, err)
+	}
+	d.logger.Info().Str("entry", entry.Name).Str("file", file.Name).Msg("Replaced symlink with local file")
 	return nil
 }
 

@@ -258,6 +258,20 @@
                                            id="max_downloads" min="0" disabled>
                                     <span class="text-sm opacity-70">Max simultaneous downloads (0 = unlimited)</span>
                                 </div>
+                                <div class="lg:col-span-2">
+                                    <label class="label cursor-pointer justify-start gap-3">
+                                        <input type="checkbox"
+                                               class="checkbox checkbox-primary downloader-option"
+                                               name="download_in_background" id="download_in_background" disabled>
+                                        <div>
+                                            <span class="font-medium">Download in Background</span>
+                                            <div class="label-text-alt">Symlink first for immediate availability, then
+                                                download the real files in the background. Skips the download if there
+                                                isn't enough free disk space.
+                                            </div>
+                                        </div>
+                                    </label>
+                                </div>
                             </div>
 
 
