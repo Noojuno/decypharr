@@ -147,6 +147,11 @@ type Config struct {
 	// symlinks are repointed at them. Defaults to <main_path>/local.
 	LocalFilesPath string `json:"local_files_path,omitempty"`
 
+	// AutoPromote, when true, automatically backfills local copies for every
+	// entry imported in symlink mode and repoints the *arr library symlinks
+	// once the download completes. See pkg/promote.
+	AutoPromote bool `json:"auto_promote,omitempty"`
+
 	RefreshDirs  string `json:"refresh_dirs,omitempty"`
 	Retries      int    `json:"retries,omitempty"`
 	SkipAutoMove bool   `json:"skip_auto_move,omitempty"`

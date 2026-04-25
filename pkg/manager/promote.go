@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/pkg/arr"
@@ -58,6 +59,32 @@ func (r *promoteResolver) HTTPClient() *http.Client {
 	return r.manager.streamClient
 }
 
+func (r *promoteResolver) PersistStatus(infoHash string, status promote.Status) {
+	entry, err := r.manager.queue.GetTorrent(infoHash)
+	if err != nil {
+		return
+	}
+	entry.BackfillState = string(status.State)
+	entry.BackfillBytes = status.Bytes
+	entry.BackfillTotal = status.Total
+	entry.BackfillError = status.Error
+	_ = r.manager.queue.Update(entry)
+}
+
+func (r *promoteResolver) SetFileLocalPath(infoHash, fileName, localPath string) {
+	entry, err := r.manager.queue.GetTorrent(infoHash)
+	if err != nil {
+		return
+	}
+	if entry.Files == nil {
+		return
+	}
+	if f, ok := entry.Files[fileName]; ok {
+		f.LocalPath = localPath
+		_ = r.manager.queue.Update(entry)
+	}
+}
+
 // Promoter returns the orchestrator for this Manager. Lazy so tests that
 // don't exercise promotion don't pay setup cost; safe to call repeatedly.
 func (m *Manager) Promoter() *promote.Orchestrator {
@@ -66,4 +93,49 @@ func (m *Manager) Promoter() *promote.Orchestrator {
 		m.promoter = promote.NewOrchestrator(cache, &promoteResolver{manager: m}, m.logger)
 	})
 	return m.promoter
+}
+
+// promoteSweep finds entries that need promotion attention and dispatches
+// them through the orchestrator. Called both at startup and periodically:
+//   - Symlink-mode entries that completed but never finished promotion
+//     (BackfillState != complete) get retried.
+//   - Entries where a file's persisted LocalPath references a missing cache
+//     file are reset (LocalPath cleared) so the next promotion attempt
+//     downloads them again rather than referencing a ghost.
+//
+// The orchestrator itself is idempotent, so the worst case for spurious
+// entries is a few cheap "no-op" library lookups.
+func (m *Manager) promoteSweep(ctx context.Context) {
+	if !m.config.AutoPromote {
+		return
+	}
+	entries := m.queue.ListFilter("", config.ProtocolAll, "", nil, "", false)
+	var toPromote []string
+	for _, entry := range entries {
+		if entry.Action != config.DownloadActionSymlink {
+			continue
+		}
+		// Heal stale LocalPath records that point at missing cache files.
+		for _, file := range entry.Files {
+			if file == nil || file.LocalPath == "" {
+				continue
+			}
+			if _, err := os.Stat(file.LocalPath); os.IsNotExist(err) {
+				file.LocalPath = ""
+				_ = m.queue.Update(entry)
+			}
+		}
+		if entry.BackfillState != string(promote.StateComplete) {
+			toPromote = append(toPromote, entry.InfoHash)
+		}
+	}
+	if len(toPromote) == 0 {
+		return
+	}
+	m.logger.Debug().Int("count", len(toPromote)).Msg("Promote sweep: dispatching candidates")
+	concurrency := m.config.MaxDownloads
+	if concurrency <= 0 {
+		concurrency = 2
+	}
+	m.Promoter().Sweep(ctx, toPromote, concurrency)
 }

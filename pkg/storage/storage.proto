@@ -18,6 +18,9 @@ message FileProto {
     bool has_byte_range = 7;
     bool deleted = 8;
     string info_hash = 9;
+    // local_path is the absolute path of the local cache copy of this file,
+    // if one exists. Empty when the file is only available via the FUSE mount.
+    string local_path = 10;
 }
 
 message ProviderFileProto {
@@ -91,6 +94,12 @@ message EntryProto {
     int32 error_count = 37;
     int64 last_error_time_unix = 38;
     bool has_last_error_time = 39;
+
+    // Promotion (local-file backfill) — see pkg/promote.
+    string backfill_state = 40;
+    int64 backfill_bytes = 41;
+    int64 backfill_total = 42;
+    string backfill_error = 43;
 }
 
 // ============================================================================

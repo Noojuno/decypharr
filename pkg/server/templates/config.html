@@ -260,6 +260,35 @@
                                 </div>
                             </div>
 
+                            <div class="divider">
+                                <span class="text-lg font-semibold"><i class="bi bi-hdd-fill mr-3 text-success"></i>Local Promotion</span>
+                            </div>
+
+                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="label cursor-pointer justify-start gap-3">
+                                        <input type="checkbox" class="checkbox checkbox-primary"
+                                               name="auto_promote" id="auto_promote">
+                                        <div>
+                                            <span class="font-medium">Auto-promote to Local</span>
+                                            <div class="label-text-alt">After symlink import, download a local copy
+                                                and repoint the *arr library symlink at it. Re-tries on a 5-minute
+                                                sweep until the *arr has imported the file.
+                                            </div>
+                                        </div>
+                                    </label>
+                                </div>
+                                <div>
+                                    <label class="label" for="local_files_path">
+                                        <span class="font-medium">Local Files Path</span>
+                                    </label>
+                                    <input type="text" class="input w-full" name="local_files_path"
+                                           id="local_files_path" placeholder="/data/local">
+                                    <span class="text-sm opacity-70">Where promoted local copies live (default: data
+                                        dir)</span>
+                                </div>
+                            </div>
+
 
                             <div class="divider">
                                 <span class="text-lg font-semibold"><i class="bi bi-hdd-network mr-3 text-info"></i>WebDAV & External Rclone

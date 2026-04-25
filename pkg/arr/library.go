@@ -45,6 +45,8 @@ func BridgeFor(a *Arr) LibraryBridge {
 	switch a.Type {
 	case Radarr:
 		return &radarrBridge{arr: a}
+	case Sonarr:
+		return &sonarrBridge{arr: a}
 	default:
 		return nil
 	}
@@ -129,4 +131,110 @@ func (b *radarrBridge) movieIDForDownload(downloadID string) (int, error) {
 		}
 	}
 	return 0, nil
+}
+
+// sonarrBridge resolves an episode's library path. Sonarr can import many
+// episode files from a single download (season packs), so the history lookup
+// returns multiple records — we match on filename to find the right one.
+type sonarrBridge struct {
+	arr *Arr
+}
+
+type sonarrHistoryRecord struct {
+	ID            int    `json:"id"`
+	EpisodeID     int    `json:"episodeId"`
+	SeriesID      int    `json:"seriesId"`
+	EventType     string `json:"eventType"`
+	DownloadID    string `json:"downloadId"`
+	SourceTitle   string `json:"sourceTitle"`
+	EpisodeFileID int    `json:"episodeFileId"`
+	Data          struct {
+		DroppedPath  string `json:"droppedPath"`
+		ImportedPath string `json:"importedPath"`
+	} `json:"data"`
+}
+
+type sonarrHistoryResponse struct {
+	Records []sonarrHistoryRecord `json:"records"`
+}
+
+type sonarrEpisodeFile struct {
+	ID       int    `json:"id"`
+	SeriesID int    `json:"seriesId"`
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+}
+
+func (b *sonarrBridge) FindLibraryFile(downloadID, fileBaseName string) (LibraryFile, error) {
+	for _, id := range []string{strings.ToLower(downloadID), strings.ToUpper(downloadID)} {
+		records, err := b.importsForDownload(id)
+		if err != nil {
+			return LibraryFile{}, err
+		}
+		if len(records) == 0 {
+			continue
+		}
+
+		// Pick the record whose source matches our file. Sonarr stores the
+		// path it pulled from in droppedPath; that's the source symlink we
+		// placed. Falling back to sourceTitle handles older Sonarr versions.
+		var match *sonarrHistoryRecord
+		for i := range records {
+			rec := records[i]
+			if matchesSource(rec.Data.DroppedPath, fileBaseName) || matchesSource(rec.SourceTitle, fileBaseName) {
+				match = &rec
+				break
+			}
+		}
+		if match == nil && len(records) == 1 {
+			// Single-file download — only one possible target.
+			match = &records[0]
+		}
+		if match == nil || match.EpisodeFileID == 0 {
+			continue
+		}
+
+		var ef sonarrEpisodeFile
+		path := fmt.Sprintf("api/v3/episodefile/%d", match.EpisodeFileID)
+		resp, err := b.arr.Request(http.MethodGet, path, nil, &ef)
+		if err != nil {
+			return LibraryFile{}, fmt.Errorf("sonarr episodefile lookup: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return LibraryFile{}, fmt.Errorf("sonarr episodefile lookup: %s", resp.Status)
+		}
+		if ef.Path == "" {
+			continue
+		}
+		return LibraryFile{Path: ef.Path, Size: ef.Size}, nil
+	}
+	return LibraryFile{}, ErrLibraryFileNotFound
+}
+
+func (b *sonarrBridge) importsForDownload(downloadID string) ([]sonarrHistoryRecord, error) {
+	q := gourl.Values{}
+	q.Set("downloadId", downloadID)
+	q.Set("eventType", "3") // downloadFolderImported
+	q.Set("pageSize", "200")
+	var data sonarrHistoryResponse
+	resp, err := b.arr.Request(http.MethodGet, "api/v3/history?"+q.Encode(), nil, &data)
+	if err != nil {
+		return nil, fmt.Errorf("sonarr history lookup: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sonarr history lookup: %s", resp.Status)
+	}
+	return data.Records, nil
+}
+
+// matchesSource reports whether the *arr-side source descriptor (droppedPath
+// or sourceTitle) corresponds to our file. We match by filename basename
+// since the *arr may have prefixed the path differently than our symlink.
+func matchesSource(source, fileBaseName string) bool {
+	if source == "" || fileBaseName == "" {
+		return false
+	}
+	return source == fileBaseName ||
+		strings.HasSuffix(source, "/"+fileBaseName) ||
+		strings.HasSuffix(source, "\\"+fileBaseName)
 }

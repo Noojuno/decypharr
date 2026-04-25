@@ -325,7 +325,10 @@ class TorrentDashboard {
                         <span class="text-sm">${torrent.num_seeds || 0}</span>
                     </td>
                     <td>
-                        ${this.renderStateBadge(torrent.state)}
+                        <div class="flex flex-col gap-1">
+                            ${this.renderStateBadge(torrent.state)}
+                            ${this.renderBackfillBadge(torrent)}
+                        </div>
                     </td>
                     <td>
                         <button class="btn btn-ghost btn-xs text-error"
@@ -357,6 +360,27 @@ class TorrentDashboard {
                 <span class="text-xs font-medium">${percent}%</span>
             </div>
         `;
+    }
+
+    renderBackfillBadge(torrent) {
+        const state = torrent.backfill_state;
+        if (!state || state === 'complete') return '';
+        const map = {
+            'pending':     { class: 'badge-ghost', text: 'Local: queued' },
+            'downloading': { class: 'badge-info',  text: 'Local: ' + this.backfillPercent(torrent) },
+            'repointing':  { class: 'badge-info',  text: 'Local: linking' },
+            'failed':      { class: 'badge-error', text: 'Local: failed' }
+        };
+        const s = map[state];
+        if (!s) return '';
+        return `<span class="badge ${s.class} badge-xs">${s.text}</span>`;
+    }
+
+    backfillPercent(torrent) {
+        const total = torrent.backfill_total || 0;
+        const bytes = torrent.backfill_bytes || 0;
+        if (total <= 0) return '…';
+        return Math.round((bytes / total) * 100) + '%';
     }
 
     renderStateBadge(state) {

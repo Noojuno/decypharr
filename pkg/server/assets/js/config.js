@@ -107,7 +107,8 @@ class ConfigManager {
             'nzb_user_agent', 'download_folder', 'refresh_interval',
             'max_downloads', 'skip_pre_cache', 'always_rm_tracker_urls',
             'folder_naming', 'refresh_dirs',
-            'default_download_action'
+            'default_download_action',
+            'auto_promote', 'local_files_path'
         ];
 
         fields.forEach(field => {
@@ -1091,6 +1092,8 @@ class ConfigManager {
             download_folder: document.querySelector('[name="download_folder"]').value,
             refresh_interval: document.querySelector('[name="refresh_interval"]').value || "30s",
             default_download_action: document.querySelector('[name="default_download_action"]')?.value || "symlink",
+            auto_promote: document.querySelector('[name="auto_promote"]')?.checked || false,
+            local_files_path: document.querySelector('[name="local_files_path"]')?.value || "",
             max_downloads: parseInt(document.querySelector('[name="max_downloads"]').value) || 0,
             skip_pre_cache: document.querySelector('[name="skip_pre_cache"]').checked,
             always_rm_tracker_urls: document.querySelector('[name="always_rm_tracker_urls"]').checked,

@@ -133,6 +133,20 @@ func (d *Downloader) markAsCompleted(entry *storage.Entry) {
 		a := d.manager.arr.GetOrCreate(entry.Category)
 		a.Refresh()
 	}()
+
+	// Auto-promote: backfill a local copy and repoint the *arr library symlink.
+	// Only meaningful for symlink mode — the other modes don't leave a symlink
+	// that needs repointing. The orchestrator handles "library file not found
+	// yet" gracefully, so racing the *arr import is fine; the periodic sweep
+	// will pick up anything that lands too early.
+	if d.manager.config.AutoPromote && entry.Action == config.DownloadActionSymlink {
+		hash := entry.InfoHash
+		go func() {
+			if err := d.manager.Promoter().Promote(d.manager.ctx, hash); err != nil {
+				d.logger.Warn().Err(err).Str("entry", entry.Name).Msg("Auto-promote did not complete (cached files will be retried by sweep)")
+			}
+		}()
+	}
 }
 
 func (d *Downloader) markAsError(entry *storage.Entry, err error) {

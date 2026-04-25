@@ -14,11 +14,12 @@ import (
 
 func fileToProto(f *File) *FileProto {
 	pb := &FileProto{
-		Name:     f.Name,
-		Path:     f.Path,
-		Size:     f.Size,
-		Deleted:  f.Deleted,
-		InfoHash: f.InfoHash,
+		Name:      f.Name,
+		Path:      f.Path,
+		Size:      f.Size,
+		Deleted:   f.Deleted,
+		InfoHash:  f.InfoHash,
+		LocalPath: f.LocalPath,
 	}
 	if !f.AddedOn.IsZero() {
 		pb.AddedOnUnix = f.AddedOn.Unix()
@@ -33,11 +34,12 @@ func fileToProto(f *File) *FileProto {
 
 func protoToFile(pb *FileProto) *File {
 	f := &File{
-		Name:     pb.Name,
-		Path:     pb.Path,
-		Size:     pb.Size,
-		Deleted:  pb.Deleted,
-		InfoHash: pb.InfoHash,
+		Name:      pb.Name,
+		Path:      pb.Path,
+		Size:      pb.Size,
+		Deleted:   pb.Deleted,
+		InfoHash:  pb.InfoHash,
+		LocalPath: pb.LocalPath,
 	}
 	if pb.AddedOnUnix != 0 {
 		f.AddedOn = time.Unix(pb.AddedOnUnix, 0)
@@ -158,6 +160,10 @@ func EntryToProto(e *Entry) *EntryProto {
 		SkipMultiSeason:  e.SkipMultiSeason,
 		LastError:        e.LastError,
 		ErrorCount:       int32(e.ErrorCount),
+		BackfillState:    e.BackfillState,
+		BackfillBytes:    e.BackfillBytes,
+		BackfillTotal:    e.BackfillTotal,
+		BackfillError:    e.BackfillError,
 	}
 
 	// Timestamps
@@ -226,6 +232,10 @@ func ProtoToEntry(pb *EntryProto) *Entry {
 		SkipMultiSeason:  pb.SkipMultiSeason,
 		LastError:        pb.LastError,
 		ErrorCount:       int(pb.ErrorCount),
+		BackfillState:    pb.BackfillState,
+		BackfillBytes:    pb.BackfillBytes,
+		BackfillTotal:    pb.BackfillTotal,
+		BackfillError:    pb.BackfillError,
 	}
 
 	// Timestamps

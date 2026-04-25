@@ -93,6 +93,12 @@ type Entry struct {
 	LastError     string     `msgpack:"last_error,omitempty" json:"last_error,omitempty"`           // Last error message
 	ErrorCount    int        `msgpack:"error_count,omitempty" json:"error_count,omitempty"`         // Number of errors
 	LastErrorTime *time.Time `msgpack:"last_error_time,omitempty" json:"last_error_time,omitempty"` // Last error time
+
+	// Promotion (local-file backfill) state — see pkg/promote.
+	BackfillState string `msgpack:"backfill_state,omitempty" json:"backfill_state,omitempty"`
+	BackfillBytes int64  `msgpack:"backfill_bytes,omitempty" json:"backfill_bytes,omitempty"`
+	BackfillTotal int64  `msgpack:"backfill_total,omitempty" json:"backfill_total,omitempty"`
+	BackfillError string `msgpack:"backfill_error,omitempty" json:"backfill_error,omitempty"`
 }
 
 func (e *Entry) IsTorrent() bool {
@@ -197,6 +203,9 @@ type File struct {
 	ByteRange *[2]int64 `msgpack:"byte_range,omitempty" json:"byte_range,omitempty"`
 	Deleted   bool      `msgpack:"deleted" json:"deleted"`
 	InfoHash  string    `msgpack:"infohash,omitempty" json:"infohash,omitempty"` // Parent infohash(might be an nzb or torrent)
+	// LocalPath is the absolute path of the local cache copy of this file, if
+	// one exists. Empty when the file is only available via the FUSE mount.
+	LocalPath string `msgpack:"local_path,omitempty" json:"local_path,omitempty"`
 }
 
 // ProviderFile represents debrid-specific file information

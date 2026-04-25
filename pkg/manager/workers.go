@@ -89,6 +89,26 @@ func (m *Manager) addQueueProcessorJob(ctx context.Context) error {
 		}
 	}
 
+	// Promote sweep — retries any backfills that didn't reach "complete"
+	// (e.g. *arr hadn't imported yet on the first attempt). Cheap when the
+	// queue is empty of candidates; idempotent on repeats.
+	if m.config.AutoPromote {
+		// Run once at startup so anything in flight from a previous run
+		// resumes promptly, then on a slow recurring cadence.
+		go m.promoteSweep(ctx)
+		if jd, err := utils.ConvertToJobDef("5m"); err != nil {
+			m.logger.Error().Err(err).Msg("Failed to convert promote sweep interval to job definition")
+		} else {
+			if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
+				m.promoteSweep(ctx)
+			}), gocron.WithContext(ctx), gocron.WithName("promote-sweep")); err != nil {
+				m.logger.Error().Err(err).Msg("Failed to create promote sweep job")
+			} else {
+				m.logger.Debug().Msg("Promote sweep job scheduled for every 5m")
+			}
+		}
+	}
+
 	// NZB refresh job for pending archives (every 5 minutes)
 	if m.usenet != nil {
 		if jd, err := utils.ConvertToJobDef("10m"); err != nil {

@@ -54,6 +54,13 @@ type Resolver interface {
 	MountPath() string
 	// HTTPClient returns the client used to fetch debrid download links.
 	HTTPClient() *http.Client
+	// PersistStatus writes the current backfill state to the entry's
+	// persistent record so it survives restarts. May be called frequently
+	// during a backfill; implementations should be cheap.
+	PersistStatus(infoHash string, status Status)
+	// SetFileLocalPath records that a file now has a local cache copy at the
+	// given path. Empty path clears the record (used during demote/eviction).
+	SetFileLocalPath(infoHash, fileName, localPath string)
 }
 
 // EntryFile is the per-file payload the orchestrator needs to backfill one
@@ -97,6 +104,39 @@ func (o *Orchestrator) Status(infoHash string) Status {
 		return *s
 	}
 	return Status{}
+}
+
+// CachePath returns the path a cached file would have for the given entry +
+// filename, regardless of whether that file currently exists. Used by the
+// startup sweep to verify or repair library symlinks against the cache.
+func (o *Orchestrator) CachePath(infoHash, fileName string) string {
+	return o.cache.Path(infoHash, fileName)
+}
+
+// CacheHas reports whether a usable local copy is present.
+func (o *Orchestrator) CacheHas(infoHash, fileName string) bool {
+	return o.cache.Exists(infoHash, fileName)
+}
+
+// Sweep runs Promote in the background for each given infohash, bounded by
+// the number of concurrent goroutines. Returns immediately. Used by the
+// startup + periodic self-healing sweeps; safe to call repeatedly because
+// Promote itself is idempotent (already-cached files skip download, already-
+// repointed symlinks skip the swap).
+func (o *Orchestrator) Sweep(ctx context.Context, infoHashes []string, concurrency int) {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	sem := make(chan struct{}, concurrency)
+	for _, hash := range infoHashes {
+		sem <- struct{}{}
+		go func(h string) {
+			defer func() { <-sem }()
+			if err := o.Promote(ctx, h); err != nil {
+				o.logger.Debug().Err(err).Str("infohash", h).Msg("Sweep promote: deferred")
+			}
+		}(hash)
+	}
 }
 
 // Promote runs the full state machine for an entry: download each file into
@@ -155,6 +195,7 @@ func (o *Orchestrator) Promote(ctx context.Context, infoHash string) error {
 			status.Bytes += file.Size
 			o.updateProgress(infoHash, status)
 		}
+		o.resolver.SetFileLocalPath(infoHash, file.Name, o.cache.Path(infoHash, file.Name))
 	}
 
 	status.State = StateRepointing
@@ -249,8 +290,10 @@ func (o *Orchestrator) lockFor(infoHash string) *sync.Mutex {
 
 func (o *Orchestrator) setStatus(infoHash string, status *Status) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	o.states[infoHash] = status
+	snapshot := *status
+	o.mu.Unlock()
+	o.resolver.PersistStatus(infoHash, snapshot)
 }
 
 func (o *Orchestrator) updateProgress(infoHash string, status *Status) {
