@@ -271,6 +271,13 @@ func (d *Downloader) backfillToLocal(entry *storage.Entry) {
 	}
 
 	folder := entry.DownloadPath()
+	// If the *arr already imported the symlinks and cleaned up the source
+	// folder, there's nothing to backfill — a local copy here would be an
+	// orphan. This is the expected outcome when the *arr has cleanup enabled.
+	if _, err := os.Stat(folder); os.IsNotExist(err) {
+		d.logger.Info().Str("entry", entry.Name).Str("path", folder).Msg("Skipping background download: source folder no longer exists (likely cleaned up after import)")
+		return
+	}
 	required := uint64(totalSize) + uint64(float64(totalSize)*freeSpaceHeadroomRatio)
 	avail, err := availableBytes(folder)
 	if err != nil {
@@ -338,14 +345,21 @@ func (d *Downloader) backfillToLocal(entry *storage.Entry) {
 		d.logger.Error().Err(err).Str("entry", entry.Name).Msg("Background download finished with errors")
 		return
 	}
-	d.logger.Info().Str("entry", entry.Name).Msg("Background download complete; symlinks replaced with local files")
+	d.logger.Info().Str("entry", entry.Name).Msg("Background download finished")
 }
 
 // backfillFile downloads a single file to a temporary path, then atomically
 // renames it over the existing symlink. POSIX rename(2) replaces the symlink
-// in a single step.
+// in a single step. Skips quietly if the symlink has already been removed
+// (typically by an *arr cleanup after import).
 func (d *Downloader) backfillFile(entry *storage.Entry, file *storage.File, folder string, progressCallback func(int64, int64)) error {
 	finalPath := filepath.Join(folder, file.Name)
+
+	if _, err := os.Lstat(finalPath); os.IsNotExist(err) {
+		d.logger.Info().Str("entry", entry.Name).Str("file", file.Name).Msg("Skipping backfill for file: symlink no longer exists")
+		return nil
+	}
+
 	tmpPath := finalPath + ".part"
 
 	link, err := d.manager.linkService.GetLink(context.Background(), entry, file.Name)
@@ -356,6 +370,15 @@ func (d *Downloader) backfillFile(entry *storage.Entry, file *storage.File, fold
 	if err := d.localDownloader(link.DownloadLink, tmpPath, file.ByteRange, progressCallback); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("download %s: %w", file.Name, err)
+	}
+
+	// Re-check before swapping: the symlink may have been removed mid-download.
+	// Without this we'd leave an orphan file behind in a folder *arr expected
+	// to be empty.
+	if _, err := os.Lstat(finalPath); os.IsNotExist(err) {
+		_ = os.Remove(tmpPath)
+		d.logger.Info().Str("entry", entry.Name).Str("file", file.Name).Msg("Discarding backfill: symlink removed during download")
+		return nil
 	}
 
 	if err := os.Rename(tmpPath, finalPath); err != nil {
