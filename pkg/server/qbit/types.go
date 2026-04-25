@@ -400,15 +400,23 @@ type TorrentFile struct {
 
 // ToQBitTorrent converts to QBitTorrent format for API compatibility
 func convertToQBitTorrentTorrent(t *storage.Entry) Torrent {
+	// Backfilling is a decypharr-internal state — present a completed torrent
+	// to qBit clients so *arrs treat the entry as ready to import.
+	state := t.State
+	progress := t.Progress
+	if state == storage.EntryStateBackfilling {
+		state = storage.EntryStatePausedUP
+		progress = 1.0
+	}
 	qbitTorrent := Torrent{
 		Hash:         t.InfoHash,
 		Name:         t.Name,
 		Size:         t.Size,
-		Progress:     t.Progress,
+		Progress:     progress,
 		Dlspeed:      t.Speed,
 		Eta:          int64(0), // ETA not tracked
 		NumSeeds:     t.Seeders,
-		State:        t.State,
+		State:        state,
 		Category:     t.Category,
 		SavePath:     t.SavePath,
 		ContentPath:  t.ContentPath,
@@ -416,8 +424,8 @@ func convertToQBitTorrentTorrent(t *storage.Entry) Torrent {
 		CompletionOn: 0,
 		Debrid:       t.ActiveProvider,
 		DebridID:     "",
-		AmountLeft:   int64(float64(t.Size) * (1 - t.Progress)),
-		Downloaded:   int64(float64(t.Size) * t.Progress),
+		AmountLeft:   int64(float64(t.Size) * (1 - progress)),
+		Downloaded:   int64(float64(t.Size) * progress),
 		MagnetURI:    t.Magnet,
 		Files:        getTorrentFiles(t),
 

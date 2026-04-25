@@ -29,6 +29,11 @@ const (
 	EntryStatePausedDL    TorrentState = "pausedDL"
 	EntryStatePausedUP    TorrentState = "pausedUP"
 	EntryStateError       TorrentState = "error"
+	// EntryStateBackfilling means the entry is fully usable via symlinks but the
+	// real files are still being downloaded locally in the background. Internal
+	// only — translated to pausedUP at the qBit API boundary so *arrs see the
+	// entry as completed.
+	EntryStateBackfilling TorrentState = "backfilling"
 )
 
 // Common errors

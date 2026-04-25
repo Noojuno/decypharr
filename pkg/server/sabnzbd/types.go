@@ -273,7 +273,7 @@ func getNZBFiles(e *storage.Entry) []File {
 	switch e.State {
 	case storage.EntryStateDownloading:
 		fileStatus = "active"
-	case storage.EntryStatePausedUP:
+	case storage.EntryStatePausedUP, storage.EntryStateBackfilling:
 		fileStatus = "finished"
 	}
 	idx := 0
@@ -311,7 +311,7 @@ func mapStorageStateToSABStatus(state storage.TorrentState) string {
 		return StatusDownloading
 	case storage.EntryStatePausedDL:
 		return StatusPaused
-	case storage.EntryStatePausedUP:
+	case storage.EntryStatePausedUP, storage.EntryStateBackfilling:
 		return StatusCompleted
 	case storage.EntryStateError:
 		return StatusFailed

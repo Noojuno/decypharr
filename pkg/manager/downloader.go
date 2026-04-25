@@ -255,9 +255,10 @@ func (d *Downloader) processSymlinkThenDownload(entry *storage.Entry, mountPath 
 }
 
 // backfillToLocal downloads each file in the background and replaces its
-// symlink with the real file once complete. The entry's "completed" state is
-// not touched — symlinks already satisfy consumers; this is a transparent
-// upgrade.
+// symlink with the real file once complete. While running, the entry's State
+// is flipped to EntryStateBackfilling and Progress tracks the local copy
+// progress so the dashboard can show it; the qBit API translates these back
+// to "completed" so *arrs aren't affected.
 func (d *Downloader) backfillToLocal(entry *storage.Entry) {
 	files := entry.GetActiveFiles()
 	if len(files) == 0 {
@@ -290,16 +291,50 @@ func (d *Downloader) backfillToLocal(entry *storage.Entry) {
 
 	d.logger.Info().Str("entry", entry.Name).Int("files", len(files)).Msg("Starting background download to local storage")
 
+	entry.State = storage.EntryStateBackfilling
+	entry.Progress = 0
+	entry.SizeDownloaded = 0
+	entry.Speed = 0
+	_ = d.manager.queue.Update(entry)
+
+	var (
+		progressMu      sync.Mutex
+		downloadedTotal int64
+	)
+	progressCallback := func(delta int64, speed int64) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		downloadedTotal += delta
+		entry.SizeDownloaded = downloadedTotal
+		entry.Speed = speed
+		if totalSize > 0 {
+			entry.Progress = float64(downloadedTotal) / float64(totalSize)
+		}
+		entry.UpdatedAt = time.Now()
+		_ = d.manager.queue.Update(entry)
+	}
+
 	p := pool.New().WithErrors().WithFirstError()
 	if d.maxDownloads > 0 {
 		p = p.WithMaxGoroutines(d.maxDownloads)
 	}
 	for _, file := range files {
 		p.Go(func() error {
-			return d.backfillFile(entry, file, folder)
+			return d.backfillFile(entry, file, folder, progressCallback)
 		})
 	}
-	if err := p.Wait(); err != nil {
+	err = p.Wait()
+
+	// Restore the "completed" state regardless of outcome — symlinks remain in
+	// place either way, so the entry is still usable. Only failed files lose
+	// their local-copy upgrade.
+	entry.State = storage.EntryStatePausedUP
+	entry.Progress = 1.0
+	entry.Speed = 0
+	entry.UpdatedAt = time.Now()
+	_ = d.manager.queue.Update(entry)
+
+	if err != nil {
 		d.logger.Error().Err(err).Str("entry", entry.Name).Msg("Background download finished with errors")
 		return
 	}
@@ -309,7 +344,7 @@ func (d *Downloader) backfillToLocal(entry *storage.Entry) {
 // backfillFile downloads a single file to a temporary path, then atomically
 // renames it over the existing symlink. POSIX rename(2) replaces the symlink
 // in a single step.
-func (d *Downloader) backfillFile(entry *storage.Entry, file *storage.File, folder string) error {
+func (d *Downloader) backfillFile(entry *storage.Entry, file *storage.File, folder string, progressCallback func(int64, int64)) error {
 	finalPath := filepath.Join(folder, file.Name)
 	tmpPath := finalPath + ".part"
 
@@ -318,7 +353,7 @@ func (d *Downloader) backfillFile(entry *storage.Entry, file *storage.File, fold
 		return fmt.Errorf("get download link for %s: %w", file.Name, err)
 	}
 
-	if err := d.localDownloader(link.DownloadLink, tmpPath, file.ByteRange, nil); err != nil {
+	if err := d.localDownloader(link.DownloadLink, tmpPath, file.ByteRange, progressCallback); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("download %s: %w", file.Name, err)
 	}

@@ -351,6 +351,7 @@ class TorrentDashboard {
         const stateMap = {
             'pausedUP': { class: 'badge-success', text: 'Completed' },
             'downloading': { class: 'badge-info', text: 'Downloading' },
+            'backfilling': { class: 'badge-info', text: 'Available · Downloading' },
             'error': { class: 'badge-error', text: 'Error' },
             'queued': { class: 'badge-ghost', text: 'Queued' },
             'paused': { class: 'badge-warning', text: 'Paused' }
