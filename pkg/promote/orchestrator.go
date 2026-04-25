@@ -28,6 +28,17 @@ const freeSpaceHeadroomRatio = 0.05
 // giving up. Backoff starts at 2s and doubles each attempt.
 const httpRetryAttempts = 3
 
+// importPollInterval and importPollTimeout bound the wait-for-*arr-import
+// phase. We poll the *arr's library bridge instead of starting the backfill
+// immediately because the *arr's mediainfo scan reads heavily through the
+// FUSE mount; downloading in parallel saturates the debrid connection and
+// stalls the import. Once we see the imported library file, mediainfo is
+// definitionally done and the bandwidth is ours.
+const (
+	importPollInterval = 30 * time.Second
+	importPollTimeout  = 30 * time.Minute
+)
+
 // PromoteEvent describes a transition the orchestrator wants to surface to
 // the broader system (notifications, callbacks, telemetry). Wrapped behind
 // a Resolver method so promote/ stays free of notification dependencies.
@@ -44,12 +55,13 @@ type PromoteEvent struct {
 type State string
 
 const (
-	StateIdle        State = ""
-	StatePending     State = "pending"
-	StateDownloading State = "downloading"
-	StateRepointing  State = "repointing"
-	StateComplete    State = "complete"
-	StateFailed      State = "failed"
+	StateIdle              State = ""
+	StatePending           State = "pending"
+	StateWaitingForImport  State = "waiting_for_import"
+	StateDownloading       State = "downloading"
+	StateRepointing        State = "repointing"
+	StateComplete          State = "complete"
+	StateFailed            State = "failed"
 )
 
 // Status is a snapshot of an entry's promotion progress. Returned by the
@@ -66,9 +78,13 @@ type Status struct {
 // coupling it to the Manager type. Manager implements this; tests can supply
 // a fake.
 type Resolver interface {
-	// EntryFiles returns the (filename, size, downloadLink) tuples to backfill.
-	// downloadLink should be a fully-resolved HTTP URL for the cached debrid file.
+	// EntryFiles returns the file metadata (name, size) for an entry. The
+	// download link is resolved separately just-in-time so it doesn't go
+	// stale during the wait-for-import phase.
 	EntryFiles(ctx context.Context, infoHash string) ([]EntryFile, error)
+	// ResolveDownloadLink returns a fresh HTTP URL for downloading the named
+	// file. Called immediately before the download starts.
+	ResolveDownloadLink(ctx context.Context, infoHash, fileName string) (string, error)
 	// EntryCategory returns the *arr category the entry was imported under.
 	EntryCategory(infoHash string) (string, error)
 	// ArrFor returns the *arr handle for a category, or nil if none configured.
@@ -101,11 +117,11 @@ type Resolver interface {
 }
 
 // EntryFile is the per-file payload the orchestrator needs to backfill one
-// item from a torrent.
+// item from a torrent. The download link is resolved later via
+// ResolveDownloadLink so it doesn't go stale during the wait-for-import phase.
 type EntryFile struct {
-	Name         string
-	Size         int64
-	DownloadLink string
+	Name string
+	Size int64
 }
 
 // Orchestrator drives the per-entry promotion state machine. Concurrent
@@ -245,6 +261,17 @@ func (o *Orchestrator) Promote(ctx context.Context, infoHash string) error {
 		return err
 	}
 
+	// Wait for the *arr to finish importing the symlink. The mediainfo step
+	// reads heavily from the FUSE mount; downloading in parallel saturates
+	// the debrid connection and stalls the import. Polling here keeps the
+	// bandwidth clear until the *arr is done.
+	status.State = StateWaitingForImport
+	o.setStatus(infoHash, status)
+	if err := o.waitForImport(ctx, bridge, infoHash, files); err != nil {
+		o.fail(infoHash, status, err)
+		return err
+	}
+
 	status.State = StateDownloading
 	o.setStatus(infoHash, status)
 
@@ -312,6 +339,42 @@ func (o *Orchestrator) Promote(ctx context.Context, infoHash string) error {
 	return nil
 }
 
+// waitForImport polls the *arr's library bridge until at least one of the
+// entry's files has been imported, signalling the *arr is done with its
+// mediainfo scan. Bounded by importPollTimeout so a never-imported entry
+// doesn't block forever. Returns immediately if the library file is already
+// present (e.g. manual promote of an already-imported entry).
+func (o *Orchestrator) waitForImport(ctx context.Context, bridge arr.LibraryBridge, infoHash string, files []EntryFile) error {
+	check := func() bool {
+		for _, f := range files {
+			if _, err := bridge.FindLibraryFile(infoHash, f.Name); err == nil {
+				return true
+			}
+		}
+		return false
+	}
+	if check() {
+		return nil
+	}
+	o.logger.Debug().Str("infohash", infoHash).Msg("Promote: waiting for *arr to import the symlink before starting backfill")
+	deadline := time.Now().Add(importPollTimeout)
+	ticker := time.NewTicker(importPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if check() {
+				return nil
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("timeout after %s waiting for *arr to import", importPollTimeout)
+			}
+		}
+	}
+}
+
 // downloadOne fetches a single file via HTTP and streams it into the cache.
 // Retries on transient errors (5xx, network) with exponential backoff.
 func (o *Orchestrator) downloadOne(ctx context.Context, infoHash string, file EntryFile, status *Status) error {
@@ -340,9 +403,15 @@ func (o *Orchestrator) downloadOne(ctx context.Context, infoHash string, file En
 	return fmt.Errorf("after %d attempts: %w", httpRetryAttempts, lastErr)
 }
 
-// downloadOnce performs a single GET + cache write.
+// downloadOnce performs a single GET + cache write. Resolves the download
+// link just-in-time so a fresh URL is used for each attempt — important
+// because debrid links can expire during the wait-for-import phase.
 func (o *Orchestrator) downloadOnce(ctx context.Context, infoHash string, file EntryFile, status *Status) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, file.DownloadLink, nil)
+	link, err := o.resolver.ResolveDownloadLink(ctx, infoHash, file.Name)
+	if err != nil {
+		return fmt.Errorf("resolve link: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
 	if err != nil {
 		return err
 	}

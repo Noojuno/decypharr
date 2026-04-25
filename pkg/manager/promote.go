@@ -21,7 +21,7 @@ type promoteResolver struct {
 	manager *Manager
 }
 
-func (r *promoteResolver) EntryFiles(ctx context.Context, infoHash string) ([]promote.EntryFile, error) {
+func (r *promoteResolver) EntryFiles(_ context.Context, infoHash string) ([]promote.EntryFile, error) {
 	entry, err := r.manager.queue.GetTorrent(infoHash)
 	if err != nil {
 		return nil, fmt.Errorf("get entry %s: %w", infoHash, err)
@@ -29,17 +29,24 @@ func (r *promoteResolver) EntryFiles(ctx context.Context, infoHash string) ([]pr
 	files := entry.GetActiveFiles()
 	out := make([]promote.EntryFile, 0, len(files))
 	for _, f := range files {
-		link, err := r.manager.linkService.GetLink(ctx, entry, f.Name)
-		if err != nil {
-			return nil, fmt.Errorf("get download link for %s: %w", f.Name, err)
-		}
 		out = append(out, promote.EntryFile{
-			Name:         f.Name,
-			Size:         f.Size,
-			DownloadLink: link.DownloadLink,
+			Name: f.Name,
+			Size: f.Size,
 		})
 	}
 	return out, nil
+}
+
+func (r *promoteResolver) ResolveDownloadLink(ctx context.Context, infoHash, fileName string) (string, error) {
+	entry, err := r.manager.queue.GetTorrent(infoHash)
+	if err != nil {
+		return "", fmt.Errorf("get entry %s: %w", infoHash, err)
+	}
+	link, err := r.manager.linkService.GetLink(ctx, entry, fileName)
+	if err != nil {
+		return "", err
+	}
+	return link.DownloadLink, nil
 }
 
 func (r *promoteResolver) EntryCategory(infoHash string) (string, error) {

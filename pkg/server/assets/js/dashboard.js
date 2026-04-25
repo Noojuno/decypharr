@@ -366,10 +366,11 @@ class TorrentDashboard {
         const state = torrent.backfill_state;
         if (!state || state === 'complete') return '';
         const map = {
-            'pending':     { class: 'badge-ghost', text: 'Local: queued' },
-            'downloading': { class: 'badge-info',  text: 'Local: ' + this.backfillPercent(torrent) },
-            'repointing':  { class: 'badge-info',  text: 'Local: linking' },
-            'failed':      { class: 'badge-error', text: 'Local: failed' }
+            'pending':            { class: 'badge-ghost', text: 'Local: queued' },
+            'waiting_for_import': { class: 'badge-ghost', text: 'Waiting on *arr' },
+            'downloading':        { class: 'badge-info',  text: 'Local: ' + this.backfillPercent(torrent) },
+            'repointing':         { class: 'badge-info',  text: 'Local: linking' },
+            'failed':             { class: 'badge-error', text: 'Local: failed' }
         };
         const s = map[state];
         if (!s) return '';
