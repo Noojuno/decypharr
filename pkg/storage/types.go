@@ -95,10 +95,11 @@ type Entry struct {
 	LastErrorTime *time.Time `msgpack:"last_error_time,omitempty" json:"last_error_time,omitempty"` // Last error time
 
 	// Promotion (local-file backfill) state — see pkg/promote.
-	BackfillState string `msgpack:"backfill_state,omitempty" json:"backfill_state,omitempty"`
-	BackfillBytes int64  `msgpack:"backfill_bytes,omitempty" json:"backfill_bytes,omitempty"`
-	BackfillTotal int64  `msgpack:"backfill_total,omitempty" json:"backfill_total,omitempty"`
-	BackfillError string `msgpack:"backfill_error,omitempty" json:"backfill_error,omitempty"`
+	BackfillState   string `msgpack:"backfill_state,omitempty" json:"backfill_state,omitempty"`
+	BackfillBytes   int64  `msgpack:"backfill_bytes,omitempty" json:"backfill_bytes,omitempty"`
+	BackfillTotal   int64  `msgpack:"backfill_total,omitempty" json:"backfill_total,omitempty"`
+	BackfillError   string `msgpack:"backfill_error,omitempty" json:"backfill_error,omitempty"`
+	BackfillRetries int    `msgpack:"backfill_retries,omitempty" json:"backfill_retries,omitempty"`
 }
 
 func (e *Entry) IsTorrent() bool {

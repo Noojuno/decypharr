@@ -181,6 +181,9 @@ func (m *Manager) init() {
 
 	// Recreate queue with new config
 	m.queue = newQueue(m.ctx, m.storage, 1000, cfg.RemoveStalledAfter)
+	// Hook entry deletion so we can unwind any local cache + library symlinks
+	// the promote orchestrator placed for that entry.
+	m.queue.onDelete = m.promoteCleanup
 
 	// Clear debrid clients so they get recreated with new config
 	m.clients = xsync.NewMap[string, debrid.Client]()

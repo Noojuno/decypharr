@@ -93,6 +93,12 @@ type Queue struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	cond   *sync.Cond // For blocking operations
+
+	// onDelete is invoked for every entry that gets removed from the queue
+	// (manual delete, batch delete, stalled-removal sweep). Used by the
+	// promote orchestrator to unwind cache files + library symlinks. Best-
+	// effort; errors are logged by the hook itself.
+	onDelete func(entry *storage.Entry)
 }
 
 func newQueue(ctx context.Context, storage *storage.Storage, capacity int, removeStalledAfterStr string) *Queue {
@@ -157,6 +163,9 @@ func (q *Queue) Delete(infohash string, cleanup func(t *storage.Entry) error) er
 	}
 	finalCleanup := func(entry *storage.Entry) error {
 		deleteFile(entry)
+		if q.onDelete != nil {
+			q.onDelete(entry)
+		}
 		if cleanup != nil {
 			return cleanup(entry)
 		}
@@ -166,7 +175,16 @@ func (q *Queue) Delete(infohash string, cleanup func(t *storage.Entry) error) er
 }
 
 func (q *Queue) DeleteWhere(category string, protocol config.Protocol, state storage.TorrentState, hashes []string, cleanup func(t *storage.Entry) error) error {
-	return q.storage.DeleteWhereQueued(q.ListFilterFunc(category, protocol, state, hashes), cleanup)
+	wrapped := func(entry *storage.Entry) error {
+		if q.onDelete != nil {
+			q.onDelete(entry)
+		}
+		if cleanup != nil {
+			return cleanup(entry)
+		}
+		return nil
+	}
+	return q.storage.DeleteWhereQueued(q.ListFilterFunc(category, protocol, state, hashes), wrapped)
 }
 
 func (q *Queue) DeleteStalled() error {

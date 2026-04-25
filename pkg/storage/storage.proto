@@ -100,6 +100,7 @@ message EntryProto {
     int64 backfill_bytes = 41;
     int64 backfill_total = 42;
     string backfill_error = 43;
+    int32 backfill_retries = 44;
 }
 
 // ============================================================================

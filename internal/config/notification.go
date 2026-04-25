@@ -10,6 +10,8 @@ const (
 	EventRepairComplete   NotificationEvent = "repair_complete"
 	EventRepairFailed     NotificationEvent = "repair_failed"
 	EventRepairCancelled  NotificationEvent = "repair_cancelled"
+	EventPromoteComplete  NotificationEvent = "promote_complete"
+	EventPromoteFailed    NotificationEvent = "promote_failed"
 )
 
 // Notifications holds all notification configuration

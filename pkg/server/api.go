@@ -466,7 +466,7 @@ func (s *Server) handlePromoteTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		if err := s.manager.Promoter().Promote(context.Background(), hash); err != nil {
+		if err := s.manager.Promoter().PromoteFromUser(context.Background(), hash); err != nil {
 			s.logger.Error().Err(err).Str("hash", hash).Msg("Promotion failed")
 		}
 	}()

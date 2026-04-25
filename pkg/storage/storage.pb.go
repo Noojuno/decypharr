@@ -357,12 +357,13 @@ type EntryProto struct {
 	LastErrorTimeUnix int64                          `protobuf:"varint,38,opt,name=last_error_time_unix,json=lastErrorTimeUnix,proto3" json:"last_error_time_unix,omitempty"`
 	HasLastErrorTime  bool                           `protobuf:"varint,39,opt,name=has_last_error_time,json=hasLastErrorTime,proto3" json:"has_last_error_time,omitempty"`
 	// Promotion (local-file backfill) — see pkg/promote.
-	BackfillState string `protobuf:"bytes,40,opt,name=backfill_state,json=backfillState,proto3" json:"backfill_state,omitempty"`
-	BackfillBytes int64  `protobuf:"varint,41,opt,name=backfill_bytes,json=backfillBytes,proto3" json:"backfill_bytes,omitempty"`
-	BackfillTotal int64  `protobuf:"varint,42,opt,name=backfill_total,json=backfillTotal,proto3" json:"backfill_total,omitempty"`
-	BackfillError string `protobuf:"bytes,43,opt,name=backfill_error,json=backfillError,proto3" json:"backfill_error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BackfillState   string `protobuf:"bytes,40,opt,name=backfill_state,json=backfillState,proto3" json:"backfill_state,omitempty"`
+	BackfillBytes   int64  `protobuf:"varint,41,opt,name=backfill_bytes,json=backfillBytes,proto3" json:"backfill_bytes,omitempty"`
+	BackfillTotal   int64  `protobuf:"varint,42,opt,name=backfill_total,json=backfillTotal,proto3" json:"backfill_total,omitempty"`
+	BackfillError   string `protobuf:"bytes,43,opt,name=backfill_error,json=backfillError,proto3" json:"backfill_error,omitempty"`
+	BackfillRetries int32  `protobuf:"varint,44,opt,name=backfill_retries,json=backfillRetries,proto3" json:"backfill_retries,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *EntryProto) Reset() {
@@ -694,6 +695,13 @@ func (x *EntryProto) GetBackfillError() string {
 		return x.BackfillError
 	}
 	return ""
+}
+
+func (x *EntryProto) GetBackfillRetries() int32 {
+	if x != nil {
+		return x.BackfillRetries
+	}
+	return 0
 }
 
 type EntryItemProto struct {
@@ -1309,7 +1317,7 @@ const file_pkg_storage_storage_proto_rawDesc = "" +
 	"\n" +
 	"FilesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
-	"\x05value\x18\x02 \x01(\v2\x1a.storage.ProviderFileProtoR\x05value:\x028\x01\"\x8a\r\n" +
+	"\x05value\x18\x02 \x01(\v2\x1a.storage.ProviderFileProtoR\x05value:\x028\x01\"\xb5\r\n" +
 	"\n" +
 	"EntryProto\x12\x1a\n" +
 	"\bprotocol\x18\x01 \x01(\tR\bprotocol\x12\x1b\n" +
@@ -1359,7 +1367,8 @@ const file_pkg_storage_storage_proto_rawDesc = "" +
 	"\x0ebackfill_state\x18( \x01(\tR\rbackfillState\x12%\n" +
 	"\x0ebackfill_bytes\x18) \x01(\x03R\rbackfillBytes\x12%\n" +
 	"\x0ebackfill_total\x18* \x01(\x03R\rbackfillTotal\x12%\n" +
-	"\x0ebackfill_error\x18+ \x01(\tR\rbackfillError\x1aY\n" +
+	"\x0ebackfill_error\x18+ \x01(\tR\rbackfillError\x12)\n" +
+	"\x10backfill_retries\x18, \x01(\x05R\x0fbackfillRetries\x1aY\n" +
 	"\x0eProvidersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x121\n" +
 	"\x05value\x18\x02 \x01(\v2\x1b.storage.ProviderEntryProtoR\x05value:\x028\x01\x1aL\n" +

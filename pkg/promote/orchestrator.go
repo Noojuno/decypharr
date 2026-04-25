@@ -6,12 +6,37 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/pkg/arr"
 )
+
+// MaxRetries bounds how many times the sweep will re-attempt a promotion
+// before giving up. Manual triggers via Promote() reset the counter.
+const MaxRetries = 5
+
+// freeSpaceHeadroomRatio is the fraction of total entry size kept free as a
+// safety margin on top of the raw byte requirement.
+const freeSpaceHeadroomRatio = 0.05
+
+// httpRetryAttempts is the total number of GET attempts per file before
+// giving up. Backoff starts at 2s and doubles each attempt.
+const httpRetryAttempts = 3
+
+// PromoteEvent describes a transition the orchestrator wants to surface to
+// the broader system (notifications, callbacks, telemetry). Wrapped behind
+// a Resolver method so promote/ stays free of notification dependencies.
+type PromoteEvent struct {
+	InfoHash string
+	Success  bool
+	Message  string
+	Err      error
+}
 
 // State is the lifecycle of an in-flight promotion. Held in memory for v1
 // (not persisted) — schema-backed state can be added later without changing
@@ -61,6 +86,18 @@ type Resolver interface {
 	// SetFileLocalPath records that a file now has a local cache copy at the
 	// given path. Empty path clears the record (used during demote/eviction).
 	SetFileLocalPath(infoHash, fileName, localPath string)
+	// RetriesFor returns the persisted retry count for an entry. Used to
+	// short-circuit sweep attempts that have already exhausted their budget.
+	RetriesFor(infoHash string) int
+	// IncrementRetries bumps the persisted retry count after a failed
+	// promotion attempt.
+	IncrementRetries(infoHash string)
+	// ResetRetries clears the persisted retry count. Called on manual
+	// promote requests so users can recover after the sweep has given up.
+	ResetRetries(infoHash string)
+	// Notify emits a high-level event (success or failure) for the given
+	// promotion. Implementation-defined sink (notifications, logs, etc.).
+	Notify(event PromoteEvent)
 }
 
 // EntryFile is the per-file payload the orchestrator needs to backfill one
@@ -73,11 +110,16 @@ type EntryFile struct {
 
 // Orchestrator drives the per-entry promotion state machine. Concurrent
 // promotions on the same entry are deduplicated; concurrent promotions on
-// different entries run in parallel.
+// different entries run in parallel up to maxConcurrent.
 type Orchestrator struct {
 	cache    *Cache
 	resolver Resolver
 	logger   zerolog.Logger
+
+	// sem bounds globally-concurrent backfills (auto-trigger + sweep + manual
+	// all share). Prevents a 30-episode season pack from spawning 30
+	// simultaneous downloads.
+	sem chan struct{}
 
 	mu     sync.Mutex
 	states map[string]*Status // infohash -> live status
@@ -85,14 +127,20 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator wires a cache + resolver into a runnable orchestrator.
-func NewOrchestrator(cache *Cache, resolver Resolver, logger zerolog.Logger) *Orchestrator {
-	return &Orchestrator{
+// maxConcurrent is the cap on simultaneous file downloads across all
+// in-flight promotions; <= 0 disables the cap.
+func NewOrchestrator(cache *Cache, resolver Resolver, logger zerolog.Logger, maxConcurrent int) *Orchestrator {
+	o := &Orchestrator{
 		cache:    cache,
 		resolver: resolver,
 		logger:   logger.With().Str("component", "promote").Logger(),
 		states:   make(map[string]*Status),
 		locks:    make(map[string]*sync.Mutex),
 	}
+	if maxConcurrent > 0 {
+		o.sem = make(chan struct{}, maxConcurrent)
+	}
+	return o
 }
 
 // Status returns a snapshot of the current promotion state for an entry, or
@@ -119,19 +167,13 @@ func (o *Orchestrator) CacheHas(infoHash, fileName string) bool {
 }
 
 // Sweep runs Promote in the background for each given infohash, bounded by
-// the number of concurrent goroutines. Returns immediately. Used by the
-// startup + periodic self-healing sweeps; safe to call repeatedly because
-// Promote itself is idempotent (already-cached files skip download, already-
-// repointed symlinks skip the swap).
-func (o *Orchestrator) Sweep(ctx context.Context, infoHashes []string, concurrency int) {
-	if concurrency < 1 {
-		concurrency = 1
-	}
-	sem := make(chan struct{}, concurrency)
+// the orchestrator's global semaphore (set at construction). Returns
+// immediately. Safe to call repeatedly: Promote is idempotent (already-
+// cached files skip download, already-repointed symlinks skip the swap),
+// and the per-entry lock prevents the same entry running twice in parallel.
+func (o *Orchestrator) Sweep(ctx context.Context, infoHashes []string, _ int) {
 	for _, hash := range infoHashes {
-		sem <- struct{}{}
 		go func(h string) {
-			defer func() { <-sem }()
 			if err := o.Promote(ctx, h); err != nil {
 				o.logger.Debug().Err(err).Str("infohash", h).Msg("Sweep promote: deferred")
 			}
@@ -139,19 +181,33 @@ func (o *Orchestrator) Sweep(ctx context.Context, infoHashes []string, concurren
 	}
 }
 
+// PromoteFromUser is the entry point for manual promote requests. Resets the
+// retry counter so users can recover an entry the sweep has given up on.
+func (o *Orchestrator) PromoteFromUser(ctx context.Context, infoHash string) error {
+	o.resolver.ResetRetries(infoHash)
+	return o.Promote(ctx, infoHash)
+}
+
 // Promote runs the full state machine for an entry: download each file into
 // the local cache, then repoint the *arr library symlink at the cached file.
 // Blocks until done. Per-entry mutex prevents concurrent promotions of the
-// same entry; concurrent calls on different entries proceed in parallel.
+// same entry; concurrent calls on different entries proceed in parallel up
+// to the global semaphore limit.
 func (o *Orchestrator) Promote(ctx context.Context, infoHash string) error {
 	lock := o.lockFor(infoHash)
 	lock.Lock()
 	defer lock.Unlock()
 
+	if retries := o.resolver.RetriesFor(infoHash); retries >= MaxRetries {
+		err := fmt.Errorf("retry budget exhausted (%d attempts)", retries)
+		o.logger.Debug().Str("infohash", infoHash).Int("retries", retries).Msg("Promote: skipping, retry budget exhausted")
+		return err
+	}
+
 	files, err := o.resolver.EntryFiles(ctx, infoHash)
 	if err != nil {
-		o.setStatus(infoHash, &Status{State: StateFailed, Error: err.Error()})
-		return fmt.Errorf("resolve entry files: %w", err)
+		o.fail(infoHash, &Status{State: StateFailed, Error: err.Error()}, fmt.Errorf("resolve entry files: %w", err))
+		return err
 	}
 	if len(files) == 0 {
 		o.setStatus(infoHash, &Status{State: StateComplete})
@@ -164,6 +220,18 @@ func (o *Orchestrator) Promote(ctx context.Context, infoHash string) error {
 	}
 	status := &Status{State: StatePending, Total: total}
 	o.setStatus(infoHash, status)
+
+	// Disk-space pre-flight against the cache root, including a small headroom.
+	required := uint64(total) + uint64(float64(total)*freeSpaceHeadroomRatio)
+	if avail, err := availableBytes(o.cache.root); err == nil {
+		if avail < required {
+			e := fmt.Errorf("insufficient free space at %s: need %d bytes, only %d available", o.cache.root, required, avail)
+			o.fail(infoHash, status, e)
+			return e
+		}
+	} else {
+		o.logger.Warn().Err(err).Str("path", o.cache.root).Msg("Promote: could not check free disk space, proceeding anyway")
+	}
 
 	category, err := o.resolver.EntryCategory(infoHash)
 	if err != nil {
@@ -179,6 +247,19 @@ func (o *Orchestrator) Promote(ctx context.Context, infoHash string) error {
 
 	status.State = StateDownloading
 	o.setStatus(infoHash, status)
+
+	// Acquire the global concurrency slot only for the actual download work.
+	// Holding it across the *arr API repoint stage would block other entries
+	// from starting their downloads while we wait on Sonarr/Radarr.
+	if o.sem != nil {
+		select {
+		case o.sem <- struct{}{}:
+			defer func() { <-o.sem }()
+		case <-ctx.Done():
+			o.fail(infoHash, status, ctx.Err())
+			return ctx.Err()
+		}
+	}
 
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
@@ -222,12 +303,45 @@ func (o *Orchestrator) Promote(ctx context.Context, infoHash string) error {
 	status.State = StateComplete
 	status.Progress = 1.0
 	o.setStatus(infoHash, status)
+	o.resolver.ResetRetries(infoHash)
+	o.resolver.Notify(PromoteEvent{
+		InfoHash: infoHash,
+		Success:  true,
+		Message:  fmt.Sprintf("Promotion complete: %d file(s) now served from local disk", len(files)),
+	})
 	return nil
 }
 
 // downloadOne fetches a single file via HTTP and streams it into the cache.
-// Progress is reported into the shared status snapshot.
+// Retries on transient errors (5xx, network) with exponential backoff.
 func (o *Orchestrator) downloadOne(ctx context.Context, infoHash string, file EntryFile, status *Status) error {
+	var lastErr error
+	backoff := 2 * time.Second
+	for attempt := 1; attempt <= httpRetryAttempts; attempt++ {
+		err := o.downloadOnce(ctx, infoHash, file, status)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		// Context cancellation is terminal — no point retrying.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if attempt < httpRetryAttempts {
+			o.logger.Warn().Err(err).Int("attempt", attempt).Str("file", file.Name).Dur("backoff", backoff).Msg("Promote download failed, retrying")
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			backoff *= 2
+		}
+	}
+	return fmt.Errorf("after %d attempts: %w", httpRetryAttempts, lastErr)
+}
+
+// downloadOnce performs a single GET + cache write.
+func (o *Orchestrator) downloadOnce(ctx context.Context, infoHash string, file EntryFile, status *Status) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, file.DownloadLink, nil)
 	if err != nil {
 		return err
@@ -241,12 +355,19 @@ func (o *Orchestrator) downloadOne(ctx context.Context, infoHash string, file En
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 
+	startBytes := status.Bytes
 	progress := &progressReader{
 		r:        resp.Body,
 		onTick:   func(n int64) { status.Bytes += n; o.updateProgress(infoHash, status) },
 		interval: 1 << 20, // report every 1MB
 	}
-	return o.cache.Write(infoHash, file.Name, progress)
+	if err := o.cache.Write(infoHash, file.Name, progress); err != nil {
+		// Roll back the partial-byte counter so a retry doesn't double-count.
+		status.Bytes = startBytes
+		o.updateProgress(infoHash, status)
+		return err
+	}
+	return nil
 }
 
 // repointOne validates that the library file is a symlink targeting our FUSE
@@ -307,7 +428,74 @@ func (o *Orchestrator) fail(infoHash string, status *Status, err error) {
 	status.State = StateFailed
 	status.Error = err.Error()
 	o.setStatus(infoHash, status)
+	o.resolver.IncrementRetries(infoHash)
 	o.logger.Error().Err(err).Str("infohash", infoHash).Msg("Promotion failed")
+	o.resolver.Notify(PromoteEvent{
+		InfoHash: infoHash,
+		Success:  false,
+		Message:  fmt.Sprintf("Promotion failed: %s", err.Error()),
+		Err:      err,
+	})
+}
+
+// Cleanup removes the cache directory for an entry. If a libraryFile path is
+// provided and that path is currently a symlink pointing into the cache, it's
+// repointed back to the FUSE mount path before the cache is deleted (so
+// playback continues to work via streaming once the local copy is gone). Used
+// by the queue's delete cleanup hook so removing an entry doesn't leave
+// orphan files or broken library symlinks behind.
+func (o *Orchestrator) Cleanup(infoHash string, librarySymlinks []string, fuseTargetByLibPath map[string]string) error {
+	cacheDir := filepath.Join(o.cache.root, infoHash)
+	for _, libPath := range librarySymlinks {
+		isLink, err := IsSymlink(libPath)
+		if err != nil || !isLink {
+			continue
+		}
+		target, err := ReadTarget(libPath)
+		if err != nil {
+			continue
+		}
+		if !strings.HasPrefix(target, cacheDir) {
+			continue
+		}
+		if fuseTarget, ok := fuseTargetByLibPath[libPath]; ok && fuseTarget != "" {
+			if err := Repoint(libPath, fuseTarget); err != nil {
+				o.logger.Warn().Err(err).Str("library", libPath).Msg("Cleanup: failed to repoint library symlink back to FUSE — skipping cache removal to avoid breakage")
+				return err
+			}
+		} else {
+			// No FUSE fallback known — removing the cache would break the
+			// library symlink. Leave the cache in place; the user can remove
+			// it manually once they've fixed the library.
+			o.logger.Warn().Str("library", libPath).Msg("Cleanup: no FUSE fallback target — skipping cache removal to avoid breakage")
+			return nil
+		}
+	}
+	return os.RemoveAll(cacheDir)
+}
+
+// HealLibraryLink is called by the sweep when a persisted file.LocalPath
+// points at a missing cache file. Tries to repoint the library symlink (if
+// any) back to the FUSE mount so playback survives, then returns. The next
+// promote attempt re-downloads.
+func (o *Orchestrator) HealLibraryLink(libPath, fuseTarget string) error {
+	if libPath == "" || fuseTarget == "" {
+		return nil
+	}
+	isLink, err := IsSymlink(libPath)
+	if err != nil || !isLink {
+		return err
+	}
+	target, err := ReadTarget(libPath)
+	if err != nil {
+		return err
+	}
+	// Only heal symlinks that currently point into our cache root.
+	if !strings.HasPrefix(target, o.cache.root) {
+		return nil
+	}
+	o.logger.Warn().Str("library", libPath).Str("missing_cache", target).Str("fallback", fuseTarget).Msg("Healing broken library symlink: repointing back to FUSE mount")
+	return Repoint(libPath, fuseTarget)
 }
 
 // progressReader wraps an io.Reader and fires onTick after every interval

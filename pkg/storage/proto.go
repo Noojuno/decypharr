@@ -164,6 +164,7 @@ func EntryToProto(e *Entry) *EntryProto {
 		BackfillBytes:    e.BackfillBytes,
 		BackfillTotal:    e.BackfillTotal,
 		BackfillError:    e.BackfillError,
+		BackfillRetries:  int32(e.BackfillRetries),
 	}
 
 	// Timestamps
@@ -236,6 +237,7 @@ func ProtoToEntry(pb *EntryProto) *Entry {
 		BackfillBytes:    pb.BackfillBytes,
 		BackfillTotal:    pb.BackfillTotal,
 		BackfillError:    pb.BackfillError,
+		BackfillRetries:  int(pb.BackfillRetries),
 	}
 
 	// Timestamps
