@@ -184,6 +184,18 @@ class TorrentDashboard {
             },
             'delete-debrid': async () => {
                 await this.deleteTorrent(torrent.hash, torrent.category, true);
+            },
+            'promote': async () => {
+                try {
+                    const res = await fetch(`/api/torrents/${torrent.hash}/promote`, { method: 'POST' });
+                    if (res.ok) {
+                        window.decypharrUtils.createToast('Promotion started — file will be downloaded locally and library symlink repointed');
+                    } else {
+                        window.decypharrUtils.createToast('Failed to start promotion', 'error');
+                    }
+                } catch (error) {
+                    window.decypharrUtils.createToast('Failed to start promotion', 'error');
+                }
             }
         };
 

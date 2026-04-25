@@ -142,6 +142,11 @@ type Config struct {
 	CustomFolders         map[string]CustomFolders `json:"custom_folders,omitempty"`
 	DefaultDownloadAction DownloadAction           `json:"default_download_action,omitempty"`
 
+	// LocalFilesPath is the directory where promoted local copies of files
+	// live. Files placed here are owned by decypharr and the *arr library
+	// symlinks are repointed at them. Defaults to <main_path>/local.
+	LocalFilesPath string `json:"local_files_path,omitempty"`
+
 	RefreshDirs  string `json:"refresh_dirs,omitempty"`
 	Retries      int    `json:"retries,omitempty"`
 	SkipAutoMove bool   `json:"skip_auto_move,omitempty"`
@@ -368,6 +373,10 @@ func (c *Config) setDefaults() {
 
 	if c.DefaultDownloadAction == "" {
 		c.DefaultDownloadAction = DownloadActionSymlink
+	}
+
+	if c.LocalFilesPath == "" {
+		c.LocalFilesPath = filepath.Join(GetMainPath(), "local")
 	}
 
 	for i, debrid := range c.Debrids {

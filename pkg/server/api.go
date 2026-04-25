@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -453,6 +454,33 @@ func (s *Server) handleDeleteTorrent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// handlePromoteTorrent kicks off a backfill that downloads the entry's files
+// into the local cache and repoints the *arr library symlinks at them. Runs
+// in the background; status is polled separately.
+func (s *Server) handlePromoteTorrent(w http.ResponseWriter, r *http.Request) {
+	hash := chi.URLParam(r, "hash")
+	if hash == "" {
+		http.Error(w, "No hash provided", http.StatusBadRequest)
+		return
+	}
+	go func() {
+		if err := s.manager.Promoter().Promote(context.Background(), hash); err != nil {
+			s.logger.Error().Err(err).Str("hash", hash).Msg("Promotion failed")
+		}
+	}()
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// handlePromoteStatus returns the current promotion state for an entry.
+func (s *Server) handlePromoteStatus(w http.ResponseWriter, r *http.Request) {
+	hash := chi.URLParam(r, "hash")
+	if hash == "" {
+		http.Error(w, "No hash provided", http.StatusBadRequest)
+		return
+	}
+	utils.JSONResponse(w, s.manager.Promoter().Status(hash), http.StatusOK)
 }
 
 func (s *Server) handleDeleteTorrents(w http.ResponseWriter, r *http.Request) {

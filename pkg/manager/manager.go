@@ -22,6 +22,7 @@ import (
 	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/manager/link"
 	"github.com/sirrobot01/decypharr/pkg/notifications"
+	"github.com/sirrobot01/decypharr/pkg/promote"
 	"github.com/sirrobot01/decypharr/pkg/storage"
 	"github.com/sirrobot01/decypharr/pkg/usenet"
 	"github.com/sirrobot01/decypharr/pkg/version"
@@ -82,6 +83,10 @@ type Manager struct {
 
 	// Notifications service
 	Notifications *notifications.Service
+
+	// Promotion (local-file backfill) — lazy-initialised on first use.
+	promoter     *promote.Orchestrator
+	promoterOnce sync.Once
 }
 
 // New creates a new Manager instance
